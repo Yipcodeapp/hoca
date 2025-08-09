@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-BASE_URL = "https://rereyano.ru/player/2/{}"
+BASE_URL = "https://hoca6.com/footy.php?player=desktop&live=ufeed{}"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
     "Accept": "*/*",
