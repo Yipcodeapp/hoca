@@ -54,27 +54,52 @@ def extract_m3u8_url(canal):
         session.headers.update(HEADERS)
         response = session.get(url, timeout=10)
         logger.info(f"🌐 GET {url} → Respuesta HTTP {response.status_code} ({len(response.content)} bytes)")
-        
+
         if response.status_code != 200:
             logger.error(f"❌ HTTP {response.status_code} al cargar la página del canal.")
+            return None
+
+        # Verificar si hay protección (como Cloudflare)
+        if "cloudflare" in response.text.lower():
+            logger.error(f"🛡️  Cloudflare detectado en {url}. El scraping está bloqueado.")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
         scripts = soup.find_all('script')
         logger.info(f"📄 Página cargada. {len(scripts)} scripts encontrados.")
 
+        # Intentar buscar cualquier .m3u8, incluso sin token
+        patterns = [
+            r'(https?://[^\s\'"\\<>]+\.m3u8[^\s\'"\\<>]*)',  # Cualquier .m3u8
+            r'(https?://[^\s\'"\\<>]+\.m3u8\?[^\'"\\<>]*md5=[^\'"\\<>]*&expires=[^\'"\\<>]*)',  # Con token
+        ]
+
         for i, script in enumerate(scripts):
-            if script.string and '.m3u8' in script.string:
-                logger.debug(f"📜 Script {i}: Contiene código JS (longitud={len(script.string)})")
-                match = re.search(r'(https?://[^\s\'"\\<>]+\.m3u8\?[^\'"\\<>]*md5=[^\'"\\<>]*&expires=[^\'"\\<>]*)', script.string)
+            if not script.string or len(script.string.strip()) < 50:
+                continue  # Saltar scripts vacíos o muy cortos
+
+            script_text = script.string.strip()
+            logger.debug(f"📜 Analizando script {i} (longitud={len(script_text)}): {script_text[:200]}...")
+
+            for pattern in patterns:
+                match = re.search(pattern, script_text)
                 if match:
                     m3u8_url = match.group(1)
-                    logger.info(f"✅ m3u8 encontrado: {m3u8_url}")
+                    logger.info(f"✅ m3u8 encontrado con patrón: {pattern}")
+                    logger.info(f"🔗 URL extraída: {m3u8_url}")
                     return m3u8_url
-                else:
-                    logger.debug(f"⚠️  Script {i} contiene '.m3u8' pero no coincide con el patrón de token.")
-        
-        logger.warning(f"❌ No se encontró URL .m3u8 en los scripts para el canal '{canal}'")
+
+        # Si no encontró nada, muestra un resumen útil
+        logger.warning(f"❌ No se encontró ninguna URL .m3u8 en los scripts para el canal '{canal}'")
+        logger.debug("💡 Para depurar: Prueba abrir manualmente esta URL en el navegador:")
+        logger.debug(f"🌐 {url}")
+        logger.debug("📌 Busca en las DevTools (Network > Media) qué URL .m3u8 se está cargando realmente.")
+
+        # Opcional: guardar el HTML para analizarlo después
+        with open(f"debug_{canal}.html", "w", encoding="utf-8") as f:
+            f.write(response.text)
+        logger.info(f"💾 HTML guardado en 'debug_{canal}.html' para análisis manual.")
+
         return None
 
     except requests.exceptions.RequestException as e:
