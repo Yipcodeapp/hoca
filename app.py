@@ -286,6 +286,18 @@ def home():
     logger.info("🏠 Página de inicio servida")
     return links
 
+@app.route('/debug/<canal>')
+def debug(canal):
+    url = BASE_URL.format(canal)
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        return Response(
+            f"<pre>{response.text}</pre>",
+            mimetype="text/html"
+        )
+    except Exception as e:
+        return f"Error: {e}"
+
 # === Refresco automático en segundo plano ===
 def background_refresh():
     while True:
