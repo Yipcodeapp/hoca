@@ -42,37 +42,88 @@ CHANNELS = load_channels()
 # === Extraer m3u8 desde el iframe de footy.php ===
 def extract_m3u8_url(canal):
     url = IFRAME_URL.format(canal)
-    print(f"🔍 Buscando .m3u8 en: {url}")
+    print(f"🔍 Iniciando extracción para canal {canal} desde: {url}")
+
     try:
         session = requests.Session()
         session.headers.update(HEADERS)
-        response = session.get(url, timeout=10)
-        print(f"🌐 Status: {response.status_code}, Tamaño: {len(response.text)}")
+        response = session.get(url, timeout=15)
+        print(f"🌐 Respuesta HTTP: {response.status_code} | Tamaño: {len(response.text)} bytes")
 
-        # Buscar .m3u8 en el HTML
-        match = re.search(r'(https?://[^\s\'"\\]+\.m3u8\?[^\'"\\]+md5=[^\'"\\]+&expires=[^\'"\\]+)', response.text)
-        if match:
-            m3u8_url = match.group(1)
-            print(f"✅ Encontrado en HTML: {m3u8_url}")
-            return m3u8_url
+        if response.status_code != 200:
+            print(f"❌ Estado inesperado: {response.status_code}")
+            return None
 
-        # Buscar en scripts inline
-        soup = BeautifulSoup(response.text, 'html.parser')
+        html = response.text
+
+        # 🔽 Guardar HTML para análisis manual (útil en Render)
+        try:
+            with open(f"debug_footy_{canal}.html", "w", encoding="utf-8") as f:
+                f.write(f"<!-- URL: {url} -->\n<!-- Time: {time.strftime('%Y-%m-%d %H:%M:%S')} -->\n{html}")
+            print(f"💾 HTML guardado localmente como debug_footy_{canal}.html")
+        except Exception as e:
+            print(f"⚠️  No se pudo guardar HTML: {e}")
+
+        # 🔍 1. Buscar cualquier cosa que parezca un .m3u8
+        patterns = [
+            # Patrón 1: m3u8 con md5 y expires (tu caso original)
+            r'(https?://[^\s\'"\\<>]+\.m3u8\?[^\'"\\<>]*md5=[^\'"\\<>]*&expires=[^\'"\\<>]*)',
+            # Patrón 2: m3u8 con token genérico
+            r'(https?://[^\s\'"\\]+\.m3u8\?[^\'"\\]+)',
+            # Patrón 3: m3u8 sin query (pero con ruta)
+            r'(https?://[^\s\'"\\]+\.m3u8)',
+            # Patrón 4: entre comillas, posiblemente en JS
+            r'["\'](https?://[^\s\'"\\]+\.m3u8[^\s\'"\\]*)["\']',
+            # Patrón 5: posiblemente codificado o en variable
+            r'(hls|playlist|source|file)[^=]*=[^=]*["\'](https?://[^\s\'"\\]+\.m3u8[^\s\'"\\]*)["\']',
+            # Patrón 6: en texto ofuscado o base64 (buscar pistas)
+            r'(base64[^\'"]*\.m3u8|decode[^\'"]*\.m3u8)',
+        ]
+
+        for i, pattern in enumerate(patterns):
+            print(f"🔎 Buscando con patrón {i+1}: {pattern[:50]}...")
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                found = match.group(1) if i < 4 else match.group(2)
+                print(f"✅ ¡ENCONTRADO! Con patrón {i+1}: {found}")
+                return found
+
+        # 🧩 2. Si no encontró nada, analizar scripts
+        soup = BeautifulSoup(html, 'html.parser')
         scripts = soup.find_all('script')
-        for script in scripts:
-            if script.string and '.m3u8' in script.string:
-                match = re.search(r'(https?://[^\s\'"\\]+\.m3u8\?[^\'"\\]+md5=[^\'"\\]+&expires=[^\'"\\]+)', script.string)
+        print(f"📜 {len(scripts)} scripts encontrados. Analizando...")
+
+        for idx, script in enumerate(scripts):
+            if not script.string or len(script.string.strip()) < 50:
+                continue
+
+            script_text = script.string.strip()
+            print(f"📝 Analizando script {idx} (longitud={len(script_text)}): {script_text[:200]}...")
+
+            for i, pattern in enumerate(patterns):
+                match = re.search(pattern, script_text, re.IGNORECASE)
                 if match:
-                    m3u8_url = match.group(1)
-                    print(f"✅ Encontrado en JS: {m3u8_url}")
-                    return m3u8_url
+                    found = match.group(1) if i < 4 else match.group(2)
+                    print(f"✅ ¡ENCONTRADO en script {idx}! Con patrón {i+1}: {found}")
+                    return found
 
-        print("❌ No se encontró .m3u8 en footy.php")
+        # 📊 3. Si sigue sin encontrar, mostrar fragmentos clave
+        print("🔍 Fragmentos importantes del HTML:")
+        for fragment in ['m3u8', 'hls', 'source', 'player', 'video', 'manifest', 'stream']:
+            lines = [line.strip() for line in html.splitlines() if fragment in line.lower()]
+            if lines:
+                print(f"  🔎 '{fragment}': {lines[:3]}")
+
+        print("❌ No se encontró ninguna URL .m3u8 en el HTML ni scripts")
         return None
 
+    except requests.exceptions.RequestException as e:
+        print(f"📡 Error de red: {e}")
     except Exception as e:
-        print(f"❌ Error al acceder a footy.php: {e}")
-        return None
+        print(f"💥 Error inesperado: {e}")
+        import traceback
+        traceback.print_exc()
+    return None
 
 # === Reescribir M3U8 para pasar por proxy ===
 def rewrite_m3u8(content, base_url, canal):
