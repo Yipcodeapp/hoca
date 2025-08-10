@@ -4,6 +4,7 @@ import re
 import time
 import threading
 import requests
+import base64
 from flask import Flask, Response, request, abort, url_for
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, quote, unquote
@@ -20,6 +21,7 @@ HEADERS = {
     "Origin": "https://hoca6.com"
 }
 
+DEBUG_HTML = {}
 STREAM_CACHE = {}
 CACHE_TTL = 300  # 5 minutos
 LOCK = threading.Lock()
@@ -56,69 +58,51 @@ def extract_m3u8_url(canal):
 
         html = response.text
 
-        # 🔽 Guardar HTML para análisis manual (útil en Render)
-        try:
-            with open(f"debug_footy_{canal}.html", "w", encoding="utf-8") as f:
-                f.write(f"<!-- URL: {url} -->\n<!-- Time: {time.strftime('%Y-%m-%d %H:%M:%S')} -->\n{html}")
-            print(f"💾 HTML guardado localmente como debug_footy_{canal}.html")
-        except Exception as e:
-            print(f"⚠️  No se pudo guardar HTML: {e}")
+        # ✅ Guardar en memoria para depuración
+        DEBUG_HTML[canal] = html
+        print(f"💾 HTML del canal {canal} guardado en memoria para depuración")
 
-        # 🔍 1. Buscar cualquier cosa que parezca un .m3u8
+        # === Decodificar la URL base64 (caso 1) ===
+        match_b64 = re.search(r"atob\('([^']+)'\)", html)
+        if match_b64:
+            try:
+                encoded = match_b64.group(1)
+                decoded_path = base64.b64decode(encoded).decode('utf-8')
+                base_domain = "https://hoca6.com"  # Dominio base
+                m3u8_url = base_domain + decoded_path
+                print(f"✅ Encontrado .m3u8 vía base64: {m3u8_url}")
+                return m3u8_url
+            except Exception as e:
+                print(f"⚠️  Error decodificando base64: {e}")
+
+        # === Buscar funciones ofuscadas como perHttUtgl() (caso 2) ===
+        match_func = re.search(r"player\.load\(\{source:\s*([a-zA-Z0-9]+)\(\)", html)
+        if match_func:
+            func_name = match_func.group(1)
+            print(f"🔍 Función ofuscada detectada: {func_name}() → buscando su definición...")
+
+            # Buscar definición de la función (var xyz = function() { ... return "url"; })
+            func_pattern = rf"var\s+{re.escape(func_name)}\s*=\s*(?:function|\([^)]*\)\s*=>|function\*|\([^)]*\)\s*{{)\s*[^;]+?['\"](https?:[^'\"]+\.m3u8[^'\"]*)['\"]"
+            match_url = re.search(func_pattern, html, re.DOTALL | re.IGNORECASE)
+            if match_url:
+                m3u8_url = match_url.group(1)
+                print(f"✅ Encontrado .m3u8 en función ofuscada: {m3u8_url}")
+                return m3u8_url
+
+        # === Patrones alternativos (por si acaso) ===
         patterns = [
-            # Patrón 1: m3u8 con md5 y expires (tu caso original)
-            r'(https?://[^\s\'"\\<>]+\.m3u8\?[^\'"\\<>]*md5=[^\'"\\<>]*&expires=[^\'"\\<>]*)',
-            # Patrón 2: m3u8 con token genérico
             r'(https?://[^\s\'"\\]+\.m3u8\?[^\'"\\]+)',
-            # Patrón 3: m3u8 sin query (pero con ruta)
-            r'(https?://[^\s\'"\\]+\.m3u8)',
-            # Patrón 4: entre comillas, posiblemente en JS
             r'["\'](https?://[^\s\'"\\]+\.m3u8[^\s\'"\\]*)["\']',
-            # Patrón 5: posiblemente codificado o en variable
-            r'(hls|playlist|source|file)[^=]*=[^=]*["\'](https?://[^\s\'"\\]+\.m3u8[^\s\'"\\]*)["\']',
-            # Patrón 6: en texto ofuscado o base64 (buscar pistas)
-            r'(base64[^\'"]*\.m3u8|decode[^\'"]*\.m3u8)',
         ]
-
-        for i, pattern in enumerate(patterns):
-            print(f"🔎 Buscando con patrón {i+1}: {pattern[:50]}...")
+        for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE)
             if match:
-                found = match.group(1) if i < 4 else match.group(2)
-                print(f"✅ ¡ENCONTRADO! Con patrón {i+1}: {found}")
-                return found
+                print(f"✅ Encontrado con patrón genérico: {match.group(1)}")
+                return match.group(1)
 
-        # 🧩 2. Si no encontró nada, analizar scripts
-        soup = BeautifulSoup(html, 'html.parser')
-        scripts = soup.find_all('script')
-        print(f"📜 {len(scripts)} scripts encontrados. Analizando...")
-
-        for idx, script in enumerate(scripts):
-            if not script.string or len(script.string.strip()) < 50:
-                continue
-
-            script_text = script.string.strip()
-            print(f"📝 Analizando script {idx} (longitud={len(script_text)}): {script_text[:200]}...")
-
-            for i, pattern in enumerate(patterns):
-                match = re.search(pattern, script_text, re.IGNORECASE)
-                if match:
-                    found = match.group(1) if i < 4 else match.group(2)
-                    print(f"✅ ¡ENCONTRADO en script {idx}! Con patrón {i+1}: {found}")
-                    return found
-
-        # 📊 3. Si sigue sin encontrar, mostrar fragmentos clave
-        print("🔍 Fragmentos importantes del HTML:")
-        for fragment in ['m3u8', 'hls', 'source', 'player', 'video', 'manifest', 'stream']:
-            lines = [line.strip() for line in html.splitlines() if fragment in line.lower()]
-            if lines:
-                print(f"  🔎 '{fragment}': {lines[:3]}")
-
-        print("❌ No se encontró ninguna URL .m3u8 en el HTML ni scripts")
+        print("❌ No se encontró ninguna URL .m3u8 directamente")
         return None
 
-    except requests.exceptions.RequestException as e:
-        print(f"📡 Error de red: {e}")
     except Exception as e:
         print(f"💥 Error inesperado: {e}")
         import traceback
@@ -222,6 +206,28 @@ def generate_m3u():
     resp = Response("\n".join(lines), mimetype="application/x-mpegurl")
     resp.headers['Content-Disposition'] = 'attachment; filename="playlist.m3u"'
     return resp
+
+@app.route('/debug/<canal>')
+def debug_page(canal):
+    html_content = DEBUG_HTML.get(canal)
+    if not html_content:
+        return f"<h3>❌ No hay datos para el canal <strong>{canal}</strong></h3><p>Accede primero a <code>/stream/{canal}.m3u8</code> para cargar el HTML.</p>", 404
+
+    return f"""
+    <html>
+    <head>
+        <title>Debug HTML - Canal {canal}</title>
+        <style>
+            body {{ font-family: monospace; white-space: pre-wrap; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <h3>🔍 HTML del canal: {canal}</h3>
+        <hr>
+        <code>{html_content}</code>
+    </body>
+    </html>
+    """
 
 # === Ruta: / ===
 @app.route('/')
